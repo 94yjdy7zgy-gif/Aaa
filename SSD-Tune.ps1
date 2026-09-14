@@ -425,6 +425,26 @@ if ($DisableSearchIndex -and $isAdmin) {
 
 $ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 Write-Info ("Arbeitsspeicher: {0}" -f (Format-GB $ram))
+
+# Laeuft der Speicher auf seinem Nennwert oder auf dem JEDEC-Standardtakt?
+# Sehr viele Rechner laufen gebremst, weil XMP/EXPO im BIOS nie aktiviert wurde.
+$dimms = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+if ($dimms.Count -gt 0) {
+    $cfg   = ($dimms | Measure-Object -Property ConfiguredClockSpeed -Maximum).Maximum
+    $rated = ($dimms | Measure-Object -Property Speed -Maximum).Maximum
+    $typ   = switch ([int]$dimms[0].SMBIOSMemoryType) {
+        24 { 'DDR3' } 26 { 'DDR4' } 34 { 'DDR5' } default { 'RAM' }
+    }
+    Write-Info ("{0}-Module: {1} Stueck, Takt {2} MT/s (Nennwert laut SPD: {3} MT/s)" -f $typ, $dimms.Count, $cfg, $rated)
+    if ($cfg -and $rated -and $cfg -lt ($rated * 0.95)) {
+        Write-Warn "Speicher laeuft unter Nennwert - XMP/EXPO im BIOS vermutlich aus."
+        Add-Finding -Prio Niedrig `
+            -Text ("RAM laeuft mit {0} statt {1} MT/s - XMP/EXPO ist im BIOS nicht aktiviert." -f $cfg, $rated) `
+            -Fix  "Im BIOS/UEFI XMP (Intel) bzw. EXPO (AMD) einschalten. Das ist kein Uebertakten, sondern der Takt, fuer den die Module verkauft wurden. Auf das SSD-Problem wirkt es allerdings kaum - dafuer zaehlt die RAM-Menge, nicht der Takt."
+    } elseif ($cfg -and $rated) {
+        Write-Ok "Speicher laeuft auf Nennwert."
+    }
+}
 $pf = Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue
 if ($pf) {
     foreach ($p in $pf) {
