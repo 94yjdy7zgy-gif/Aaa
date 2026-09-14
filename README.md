@@ -83,3 +83,45 @@ Beim Symptom „Cache voll, System hängt" sind zwei verschiedene Caches beteili
 Deshalb wirken freier Platz, TRIM und Over-Provisioning stärker als jede
 Registry-Einstellung: Sie vergrößern den SLC-Cache und senken die Write
 Amplification.
+
+## Lokal mit Claude Code weitermachen
+
+Statt das Skript selbst zu starten, kann Claude Code die Diagnose direkt auf dem
+Rechner ausführen und auf die Ergebnisse reagieren.
+
+**1. Installieren** — normale PowerShell, *ohne* Administrator:
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+Alternativ über WinGet: `winget install Anthropic.ClaudeCode`
+(aktualisiert sich dann aber nicht automatisch).
+
+**2. Prüfen:**
+
+```powershell
+claude --version
+claude doctor
+```
+
+**3. Starten** — jetzt PowerShell **als Administrator**, sonst fehlen SMART-Werte
+und TRIM lässt sich nicht ändern:
+
+```powershell
+cd <Ordner mit diesem Repo>
+claude
+```
+
+Beim ersten Start einmal im Browser anmelden.
+
+**4. Übergabe-Prompt** zum Einfügen in die lokale Session:
+
+> Meine SSD ist älter: sie schreibt erst schnell, nach wenigen GB bricht sie ein
+> und das System friert ein. Im Ordner liegt `SSD-Tune.ps1` — führe es aus
+> (erst ohne Parameter, also nur Analyse), lies die Ausgabe, und erkläre mir,
+> welcher Punkt bei mir konkret zieht. Danach wenden wir die Fixes an. Du läufst
+> in einer Administrator-PowerShell, SMART-Werte sollten also lesbar sein.
+
+Ohne Git for Windows nutzt Claude Code das PowerShell-Tool — für diese Aufgabe
+genau richtig.
