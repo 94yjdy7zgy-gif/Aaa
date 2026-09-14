@@ -97,9 +97,18 @@ Write-Host "  Modus: $(if ($Apply) { 'ANALYSE + FIXES' } else { 'nur Analyse (fu
 Write-Host "  $(Get-Date -Format 'dd.MM.yyyy HH:mm')" -ForegroundColor DarkGray
 
 if (-not $isAdmin) {
-    Write-Warn "Ohne Administratorrechte gestartet."
-    Write-Info "SMART-Werte, TRIM-Aenderungen und die meisten Fixes brauchen Admin."
-    Write-Info "PowerShell als Administrator neu oeffnen und Skript erneut starten."
+    Write-Host ""
+    Write-Warn "OHNE ADMINISTRATORRECHTE GESTARTET"
+    Write-Info "Es fehlen dadurch: SMART-Werte (Temperatur, Verschleiss), TRIM-Aenderungen"
+    Write-Info "und alle Fixes aus -Apply. Der Rest laeuft normal durch."
+    Write-Info ""
+    Write-Info "Fuer den vollen Umfang: Windows-Taste + X -> 'Terminal (Administrator)',"
+    Write-Info "dann diese beiden Zeilen einfuegen:"
+    Write-Host "         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force" -ForegroundColor Cyan
+    if ($PSCommandPath) {
+        Write-Host ("         & '{0}'" -f $PSCommandPath) -ForegroundColor Cyan
+    }
+    Write-Host ""
 }
 
 # ============================================================ 1. Hardware ====
