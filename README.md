@@ -6,18 +6,33 @@ findet und die sicheren Gegenmaßnahmen anwendet.
 
 ## Verwendung
 
-PowerShell **als Administrator** öffnen:
+PowerShell **als Administrator** öffnen: Windows-Taste + X → „Terminal (Administrator)".
+Kontrolle, ob es geklappt hat: Die Eingabeaufforderung steht dann in
+`C:\WINDOWS\system32`, nicht in deinem Benutzerordner.
 
 ```powershell
-cd <Ordner mit dem Skript>
+# Skripte fuer dieses Fenster erlauben - Windows blockiert sie sonst
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
+# Sperre fuer heruntergeladene Dateien aufheben
+Unblock-File $env:USERPROFILE\Desktop\SSD-Tune.ps1
+
 # 1) Nur Analyse - verändert nichts
-.\SSD-Tune.ps1
+& $env:USERPROFILE\Desktop\SSD-Tune.ps1
 
 # 2) Analyse + sichere Fixes
-.\SSD-Tune.ps1 -Apply
+& $env:USERPROFILE\Desktop\SSD-Tune.ps1 -Apply
 ```
+
+Pfade anpassen, falls das Skript woanders liegt.
+
+### Häufige Fehlermeldungen
+
+| Meldung | Ursache und Lösung |
+| --- | --- |
+| `Die Datei ... kann nicht geladen werden, da die Ausführung von Skripts auf diesem System deaktiviert ist` | Die `Set-ExecutionPolicy`-Zeile oben fehlt. Sie gilt nur für das aktuelle Fenster und ändert nichts dauerhaft. |
+| `... ist nicht digital signiert` | `Unblock-File` auf die Datei anwenden (Zeile oben). |
+| SMART-Werte, Temperatur und Verschleiß fehlen in der Ausgabe | Das Fenster hat keine Administratorrechte. Als Administrator neu öffnen. |
 
 Weitere Schalter:
 
