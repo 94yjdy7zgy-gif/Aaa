@@ -157,6 +157,16 @@ if ($pdisk) {
         Write-Ok "Wird korrekt als SSD gefuehrt."
     }
 
+    if ($pdisk.BusType -in @('RAID','iSCSI')) {
+        Write-Bad "Der Speichercontroller laeuft im RAID-Modus, nicht in AHCI."
+        Write-Info "Folgen: SMART-Werte kommen nicht durch (Temperatur und Verschleiss fehlen"
+        Write-Info "oder stehen faelschlich auf 0), die TRIM-Weitergabe an das Laufwerk ist"
+        Write-Info "nicht garantiert, und die RAID-Schicht kostet zusaetzlich Latenz."
+        Add-Finding -Prio Hoch `
+            -Text "Controller im RAID-Modus statt AHCI. SMART wird nicht durchgereicht, TRIM moeglicherweise auch nicht - der Controller raeumt dann dauerhaft ins Blaue auf." `
+            -Fix  "Umstellen auf AHCI, aber NICHT einfach im BIOS umschalten - Windows startet sonst nicht mehr (INACCESSIBLE_BOOT_DEVICE). Sichere Reihenfolge: 1) 'bcdedit /set {current} safeboot minimal'  2) neu starten, im BIOS auf AHCI stellen  3) Windows startet im abgesicherten Modus und richtet den AHCI-Treiber ein  4) 'bcdedit /deletevalue {current} safeboot'  5) neu starten. Vorher Backup."
+    }
+
     if ($pdisk.BusType -eq 'USB') {
         Write-Bad "USB-Gehaeuse erkannt."
         Write-Info "Die meisten USB-Bruecken reichen TRIM nicht durch. Die SSD verliert dadurch"
@@ -299,7 +309,19 @@ if ($isAdmin -and $pdisk) {
                 Write-Ok "Temperatur unauffaellig."
             }
         }
-        if ($null -ne $rc.Wear) {
+        # Ein Verschleiss von 0 ist nur dann eine gute Nachricht, wenn ueberhaupt
+        # Werte ankommen. Hinter einem RAID-Controller liefert die Schnittstelle
+        # oft stur 0, ohne Temperatur und ohne Betriebsstunden - das ist "keine
+        # Daten", nicht "wie neu".
+        $smartLeer = ((-not $rc.Temperature) -or ($rc.Temperature -le 0)) -and (-not $rc.PowerOnHours)
+
+        if ($null -ne $rc.Wear -and $rc.Wear -eq 0 -and $smartLeer) {
+            Write-Warn "Verschleiss wird als 0 % gemeldet, aber Temperatur und Betriebsstunden fehlen."
+            Write-Info "Das heisst: es kommen gar keine SMART-Daten an, der Wert ist bedeutungslos."
+            Add-Finding -Prio Mittel `
+                -Text "SMART-Werte werden nicht durchgereicht - der gemeldete Verschleiss von 0 % sagt nichts aus. Der tatsaechliche Zustand des Laufwerks ist damit unbekannt." `
+                -Fix  "CrystalDiskInfo installieren (liest SMART meist auch durch Intel RST hindurch), oder smartmontools: 'smartctl -a -d sat /dev/sda'. Bei RAID-Modus zusaetzlich 'smartctl --scan' probieren."
+        } elseif ($null -ne $rc.Wear) {
             Write-Info ("Verschleiss ... {0} %" -f $rc.Wear)
             if ($rc.Wear -ge 80) {
                 Write-Bad "Ueber 80 % der Schreib-Lebensdauer verbraucht."
@@ -381,6 +403,9 @@ if ($dt -match '(?im)^\s*(?:Current AC Power Setting Index|Aktueller Wechselstro
     } else {
         Write-Ok "Disk-Timeout ist aus."
     }
+} else {
+    Write-Info "Disk-Timeout nicht auslesbar (powercfg-Ausgabe nicht erkannt)."
+    Write-Info "Setzen laesst es sich trotzdem:  powercfg /change disk-timeout-ac 0"
 }
 if ($Apply -and $isAdmin) {
     & powercfg /change disk-timeout-ac 0 2>&1 | Out-Null
@@ -388,7 +413,7 @@ if ($Apply -and $isAdmin) {
     Write-Act "Disk-Timeout auf 'nie' gesetzt."
 }
 
-if ($pdisk -and $pdisk.BusType -eq 'SATA') {
+if ($pdisk -and $pdisk.BusType -in @('SATA','RAID')) {
     $SUB_DISK = '0012ee47-9041-4b5d-9b77-535fba8b1442'
     $LPM      = '0b2d69d7-a2a1-449c-9680-f91c70521c60'
     Write-Info "SATA erkannt. AHCI Link Power Management (HIPM/DIPM) verursacht auf vielen"
@@ -495,6 +520,15 @@ if ($part -and $disk) {
                 -Fix  ("Partition verkleinern (vorher Backup!):  Resize-Partition -DriveLetter $Drive -Size {0}" -f $newSize)
             Write-Act ("Befehl waere:  Resize-Partition -DriveLetter $Drive -Size {0}   ({1} freimachen)" -f $newSize, (Format-GB $targetShrink))
             Write-Info "Wird vom Skript bewusst NICHT automatisch ausgefuehrt."
+        } elseif (-not $sup) {
+            Write-Warn "Verkleinerbare Groesse nicht ermittelbar (Get-PartitionSupportedSize)."
+            Write-Info "Das sagt nichts ueber den freien Platz aus - der Aufruf selbst ist"
+            Write-Info "fehlgeschlagen, was hinter RAID-Controllern vorkommt."
+            Write-Info "Weg ueber die Oberflaeche: diskmgmt.msc -> Rechtsklick auf das"
+            Write-Info "Volume -> 'Volume verkleinern'."
+            Add-Finding -Prio Mittel `
+                -Text "Kein Over-Provisioning vorhanden. 10 % unpartitioniert zu lassen gibt dem Controller Reservebloecke - bei einem Laufwerk, das beim Schreiben einbricht, die wirksamste Massnahme ohne Neuanschaffung." `
+                -Fix  ("Ueber diskmgmt.msc das Volume um rund {0} verkleinern und den Bereich unzugewiesen lassen. Vorher Backup." -f (Format-GB $targetShrink))
         } else {
             Write-Info "Zu wenig freier Platz zum Verkleinern - erst aufraeumen (Punkt 2)."
         }
@@ -570,37 +604,73 @@ if ($BenchGB -le 0) {
 
         if ($rates.Count -ge 4) {
             $peak = ($rates | Measure-Object -Maximum).Maximum
-            $tailCount = [math]::Max(2, [int]($rates.Count * 0.25))
-            $tail = $rates[($rates.Count - $tailCount)..($rates.Count - 1)]
-            $sustained = ($tail | Measure-Object -Average).Average
+            $slowest = ($rates | Measure-Object -Minimum).Minimum
 
-            # Einbruchspunkt: erster Chunk dauerhaft unter 60 % des Peaks
-            $cliffGB = $null
+            # Effektive Rate = Gesamtmenge geteilt durch Gesamtzeit.
+            # Der arithmetische Mittelwert der Einzelraten taeuscht massiv, sobald
+            # einzelne Abschnitte einbrechen: ein Stillstand frisst sehr viel Zeit,
+            # zaehlt im Mittelwert aber genauso viel wie ein schneller Abschnitt.
+            # Genau das ist die Zahl, die bestimmt, wie lange eine Kopie dauert.
+            $sekGesamt = 0.0
+            foreach ($r in $rates) { if ($r -gt 0) { $sekGesamt += $chunkMB / $r } }
+            $effektiv = if ($sekGesamt -gt 0) { ($rates.Count * $chunkMB) / $sekGesamt } else { 0 }
+
+            # Eingebrochene Abschnitte: unter 25 % der Spitze
+            $grenze  = $peak * 0.25
+            $lahm    = @($rates | Where-Object { $_ -lt $grenze })
+            $lahmPct = [math]::Round(($lahm.Count / $rates.Count) * 100)
+
+            # Erster Einbruch, und erholt sich das Laufwerk danach wieder?
+            $ersterGB = $null; $erster = -1
             for ($i = 1; $i -lt $rates.Count; $i++) {
-                if ($rates[$i] -lt ($peak * 0.6)) { $cliffGB = ($i * $chunkMB) / 1024.0; break }
+                if ($rates[$i] -lt $grenze) { $erster = $i; $ersterGB = ($i * $chunkMB) / 1024.0; break }
             }
+            # Erholungen zaehlen, nicht schnelle Abschnitte: nur der Uebergang von
+            # "eingebrochen" zurueck auf volle Geschwindigkeit ist ein Ereignis.
+            # Sonst wuerde ein einzelner Ausreisser, dem viele schnelle Abschnitte
+            # folgen, schon als Saegezahn durchgehen.
+            $erholtSich = 0
+            for ($i = 1; $i -lt $rates.Count; $i++) {
+                if ($rates[$i - 1] -lt $grenze -and $rates[$i] -gt ($peak * 0.8)) { $erholtSich++ }
+            }
+            $saegezahn = ($erholtSich -ge 3 -and $lahm.Count -ge 3)
 
             Write-Host ""
-            Write-Info ("Spitze ........... {0:N0} MB/s" -f $peak)
-            Write-Info ("Dauerhaft (Ende) . {0:N0} MB/s" -f $sustained)
-            if ($cliffGB) {
-                Write-Info ("SLC-Cache ........ ca. {0:N1} GB, danach Einbruch" -f $cliffGB)
-            } else {
-                Write-Info  "SLC-Cache ........ kein Einbruch innerhalb des Tests"
-            }
+            Write-Info ("Spitze ................ {0:N0} MB/s" -f $peak)
+            Write-Info ("Effektiv (Menge/Zeit) . {0:N0} MB/s   <- massgeblich" -f $effektiv)
+            Write-Info ("Langsamster Abschnitt . {0:N0} MB/s" -f $slowest)
+            Write-Info ("Eingebrochen .......... {0} von {1} Abschnitten ({2} %)" -f $lahm.Count, $rates.Count, $lahmPct)
+            if ($ersterGB) { Write-Info ("Erster Einbruch bei ... {0:N2} GB" -f $ersterGB) }
 
-            if ($sustained -lt 60) {
-                Write-Bad ("Dauerschreibrate nur {0:N0} MB/s - das ist die Ursache der Haenger." -f $sustained)
+            Write-Host ""
+            if ($saegezahn) {
+                Write-Bad "Muster: SAEGEZAHN - das Laufwerk bricht immer wieder ein und erholt sich."
+                Write-Info "Das ist KEIN erschoepfter SLC-Cache: der bliebe langsam, statt wieder auf"
+                Write-Info "volle Geschwindigkeit zu springen. Typische Ursachen sind Garbage"
+                Write-Info "Collection und SLC-Faltung im Leerlauf, ein DRAM-loser Controller, der"
+                Write-Info "seine Zuordnungstabelle staendig nachladen muss, oder TRIM, das gar"
+                Write-Info "nicht am Laufwerk ankommt."
                 Add-Finding -Prio Hoch `
-                    -Text ("Nach ca. {0} GB faellt die Schreibrate auf {1:N0} MB/s. Windows nimmt Daten weiter schnell in den RAM an; ist der Puffer voll, blockiert das System, bis die SSD hinterherkommt." -f $(if($cliffGB){"{0:N1}" -f $cliffGB}else{"?"}), $sustained) `
-                    -Fix  "Erst Punkte 2, 3 und 8 abarbeiten (Platz, TRIM, Over-Provisioning) und erneut messen. Bleibt es dabei: Secure Erase (Punkt 10) oder Austausch. Grosse Kopien in Etappen unter der Cachegroesse."
-            } elseif ($sustained -lt 150) {
-                Write-Warn ("Dauerschreibrate {0:N0} MB/s - typisch fuer QLC oder DRAM-lose Laufwerke." -f $sustained)
+                    -Text ("Saegezahn beim Schreiben: {0} von {1} Abschnitten brechen auf bis zu {2:N0} MB/s ein, dazwischen laufen volle {3:N0} MB/s. Effektiv bleiben {4:N0} MB/s. Windows nimmt Daten weiter schnell in den RAM an - ist der Puffer voll, steht das System, bis das Laufwerk nachkommt. Genau das ist das Einfrieren." -f $lahm.Count, $rates.Count, $slowest, $peak, $effektiv) `
+                    -Fix  "In dieser Reihenfolge: AHCI statt RAID (Punkt 1), Over-Provisioning (Punkt 8), Firmware (Punkt 5). Danach erneut messen. Bleibt das Muster, ist Secure Erase (Punkt 10) der letzte Software-Versuch."
+            } elseif ($effektiv -lt 60) {
+                Write-Bad ("Effektiv nur {0:N0} MB/s - das ist die Ursache der Haenger." -f $effektiv)
+                Add-Finding -Prio Hoch `
+                    -Text ("Nach ca. {0} GB faellt die Schreibrate dauerhaft ab, effektiv bleiben {1:N0} MB/s. Windows puffert weiter im RAM; ist der Puffer voll, blockiert alles, bis das Laufwerk nachkommt." -f $(if($ersterGB){"{0:N1}" -f $ersterGB}else{"?"}), $effektiv) `
+                    -Fix  "Erst Punkte 2, 3 und 8 abarbeiten (Platz, TRIM, Over-Provisioning) und erneut messen. Bleibt es dabei: Secure Erase (Punkt 10) oder Austausch."
+            } elseif ($effektiv -lt 150) {
+                Write-Warn ("Effektiv {0:N0} MB/s - typisch fuer QLC oder DRAM-lose Laufwerke." -f $effektiv)
                 Add-Finding -Prio Mittel `
-                    -Text ("Dauerschreibrate {0:N0} MB/s nach Cache-Einbruch." -f $sustained) `
+                    -Text ("Effektive Schreibrate {0:N0} MB/s." -f $effektiv) `
                     -Fix  "Over-Provisioning (Punkt 8) und freier Platz (Punkt 2) heben diesen Wert am ehesten an."
             } else {
-                Write-Ok ("Dauerschreibrate {0:N0} MB/s - unauffaellig." -f $sustained)
+                Write-Ok ("Effektiv {0:N0} MB/s - unauffaellig." -f $effektiv)
+            }
+
+            if ($effektiv -gt 0) {
+                Write-Host ""
+                Write-Info ("Zur Einordnung: 10 GB kopieren dauert damit rund {0:N0} Minuten," -f ((10 * 1024) / $effektiv / 60))
+                Write-Info ("50 GB rund {0:N0} Minuten." -f ((50 * 1024) / $effektiv / 60))
             }
         }
     }
@@ -643,7 +713,11 @@ Write-Host ""
 Write-Host ("  " + ("-" * 70)) -ForegroundColor DarkGray
 if (-not $Apply) {
     Write-Host "  Das war nur die Analyse. Sichere Fixes anwenden mit:" -ForegroundColor White
-    Write-Host "      .\SSD-Tune.ps1 -Apply" -ForegroundColor Cyan
+    if ($PSCommandPath) {
+        Write-Host ("      & '{0}' -Apply" -f $PSCommandPath) -ForegroundColor Cyan
+    } else {
+        Write-Host "      .\SSD-Tune.ps1 -Apply" -ForegroundColor Cyan
+    }
 }
 Write-Host "  Reihenfolge der Wirksamkeit: freier Platz > TRIM > Over-Provisioning >" -ForegroundColor White
 Write-Host "  Firmware > Secure Erase. Aus einer alten QLC-SSD wird trotzdem keine" -ForegroundColor White
