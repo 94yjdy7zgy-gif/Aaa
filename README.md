@@ -6,9 +6,26 @@ findet und die sicheren Gegenmaßnahmen anwendet.
 
 ## Verwendung
 
-PowerShell **als Administrator** öffnen: Windows-Taste + X → „Terminal (Administrator)".
-Kontrolle, ob es geklappt hat: Die Eingabeaufforderung steht dann in
-`C:\WINDOWS\system32`, nicht in deinem Benutzerordner.
+### Einfachster Weg: `SSD-Tune.cmd`
+
+Beide Dateien in denselben Ordner legen, dann **Doppelklick auf `SSD-Tune.cmd`**.
+Der Starter holt sich selbst Administratorrechte (UAC-Abfrage mit Ja
+bestätigen) und umgeht die Execution Policy nur für diesen einen Aufruf —
+an den Einstellungen des Systems ändert sich nichts.
+
+Doppelklick startet die reine Analyse. Für die Fixes in einer
+Eingabeaufforderung:
+
+```bat
+SSD-Tune.cmd -Apply
+```
+
+### Von Hand in PowerShell
+
+PowerShell **als Administrator** öffnen: Windows-Taste + X → „Terminal (Administrator)",
+UAC mit Ja bestätigen. Erkennbar am Fenstertitel, der dann mit `Administrator:`
+beginnt. (Das Arbeitsverzeichnis ist *kein* verlässliches Merkmal — das
+Windows Terminal setzt es unabhängig von den Rechten.)
 
 ```powershell
 # Skripte fuer dieses Fenster erlauben - Windows blockiert sie sonst
@@ -26,11 +43,15 @@ Unblock-File $env:USERPROFILE\Desktop\SSD-Tune.ps1
 
 Pfade anpassen, falls das Skript woanders liegt.
 
+**`-Scope Process` gilt nur für das Fenster, in dem du es gesetzt hast.**
+Neues Fenster heißt: Zeile erneut ausführen. Genau dafür gibt es den
+`.cmd`-Starter oben.
+
 ### Häufige Fehlermeldungen
 
 | Meldung | Ursache und Lösung |
 | --- | --- |
-| `Die Datei ... kann nicht geladen werden, da die Ausführung von Skripts auf diesem System deaktiviert ist` | Die `Set-ExecutionPolicy`-Zeile oben fehlt. Sie gilt nur für das aktuelle Fenster und ändert nichts dauerhaft. |
+| `Die Datei ... kann nicht geladen werden, da die Ausführung von Skripts auf diesem System deaktiviert ist` | Die `Set-ExecutionPolicy`-Zeile fehlt — auch dann, wenn du sie vorhin schon einmal ausgeführt hast: `-Scope Process` gilt nur für das damalige Fenster. Entweder die Zeile erneut ausführen oder `SSD-Tune.cmd` benutzen. |
 | `... ist nicht digital signiert` | `Unblock-File` auf die Datei anwenden (Zeile oben). |
 | SMART-Werte, Temperatur und Verschleiß fehlen in der Ausgabe | Das Fenster hat keine Administratorrechte. Als Administrator neu öffnen. |
 
